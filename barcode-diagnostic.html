@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Barcode Scanner Diagnostic</title>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<style>
+*{box-sizing:border-box}body{font:15px system-ui;margin:0 auto;padding:16px;max-width:560px;background:#f2f5f8;color:#15202b}
+section{background:white;border:1px solid #d9e1e8;border-radius:12px;padding:14px;margin:12px 0}
+video,img{width:100%;background:#111;border-radius:8px;max-height:45vh;object-fit:contain}
+button,select,input{font:inherit;padding:10px;border-radius:8px;margin:5px 4px 5px 0}
+button{background:#1550d6;color:white;border:0}select{max-width:100%}
+#log{font:12px ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:230px;overflow:auto}
+.small{font-size:13px;color:#526271}
+</style></head><body>
+<h2>Barcode scanner diagnostic</h2>
+<section>
+ <b>1. Live camera test</b>
+ <video id="video" autoplay muted playsinline></video>
+ <div><button id="start">Start camera test</button><button id="stop">Stop</button></div>
+ <select id="cams" hidden></select>
+ <p class="small" id="status">Camera is not running.</p>
+</section>
+<section>
+ <b>2. Still-image test</b>
+ <p class="small">Upload a close, sharp photo of ONE barcode (not a photo showing several products).</p>
+ <input id="file" type="file" accept="image/*">
+ <img id="preview" hidden>
+ <button id="testImage" disabled>Decode uploaded image</button>
+ <p id="imageResult" class="small">No image tested.</p>
+</section>
+<section><b>Diagnostic log</b><div id="log">Ready. Start the camera test.</div></section>
+<script>
+(function(){
+const $=id=>document.getElementById(id),v=$('video'),log=$('log'),status=$('status');
+let reader=null,controls=null,stream=null,selectedFile=null,frameCount=0,notFound=0,lastInfo=0;
+function write(s){log.textContent=(new Date().toLocaleTimeString()+'  '+s+'\n'+log.textContent).slice(0,6000)}
+function stop(){
+ try{if(controls)controls.stop();if(reader)reader.reset()}catch(e){}
+ if(stream)stream.getTracks().forEach(t=>t.stop());
+ stream=null;controls=null;reader=null;v.srcObject=null;
+ status.textContent='Camera stopped.';
+}
+async function start(){
+ stop();log.textContent='';frameCount=0;notFound=0;
+ if(!window.isSecureContext){write('FAIL: page is not HTTPS/secure context');return}
+ if(!window.ZXing){write('FAIL: ZXing library did not load');return}
+ try{
+  const devices=await ZXing.BrowserCodeReader.listVideoInputDevices();
+  write('ZXing loaded. Cameras found: '+devices.length);
+  if(!devices.length)throw Error('No camera devices returned');
+  const sel=$('cams');sel.innerHTML='';
+  devices.forEach((d,i)=>{let o=document.createElement('option');o.value=d.deviceId;o.textContent=d.label||('Camera '+(i+1));sel.append(o)});
+  const rear=devices.find(d=>/back|rear|environment/i.test(d.label||''))||devices[devices.length-1];
+  sel.value=rear.deviceId;sel.hidden=devices.length<2;
+  const F=ZXing.BarcodeFormat,D=ZXing.DecodeHintType,h=new Map();
+  h.set(D.POSSIBLE_FORMATS,[F.EAN_13,F.EAN_8,F.UPC_A,F.UPC_E,F.CODE_128,F.CODE_39,F.ITF,F.CODABAR]);
+  h.set(D.TRY_HARDER,true);
+  reader=new ZXing.BrowserMultiFormatReader(h);
+  status.textContent='Requesting camera...';
+  controls=await reader.decodeFromVideoDevice(sel.value,v,(result,error)=>{
+   frameCount++;
+   if(result){write('DECODED: '+result.getText()+' | format: '+result.getBarcodeFormat());status.textContent='Barcode decoded: '+result.getText();return}
+   if(error){
+    const name=error.name||error.constructor&&error.constructor.name||'Error';
+    if(name==='NotFoundException')notFound++;
+    else write('Decoder error: '+name+' — '+(error.message||String(error)));
+   }
+   if(Date.now()-lastInfo>4000){
+    lastInfo=Date.now();
+    write('Frames processed: '+frameCount+' | no-match frames: '+notFound+' | video: '+v.videoWidth+'×'+v.videoHeight);
+   }
+  });
+  const track=v.srcObject&&v.srcObject.getVideoTracks()[0];
+  if(track){const s=track.getSettings();write('Camera settings: '+JSON.stringify({width:s.width,height:s.height,frameRate:s.frameRate,facingMode:s.facingMode}));}
+  status.textContent='Camera running. Point at ONE large, straight barcode.';
+ }catch(e){write('START FAILURE: '+(e.name||'Error')+' — '+e.message);status.textContent='Camera start failed.'}
+}
+$('start').onclick=start;$('stop').onclick=stop;$('cams').onchange=start;
+$('file').onchange=function(e){
+ selectedFile=e.target.files[0];if(!selectedFile)return;
+ const url=URL.createObjectURL(selectedFile);$('preview').src=url;$('preview').hidden=false;$('testImage').disabled=false;$('imageResult').textContent='Image loaded: '+selectedFile.name;
+};
+$('testImage').onclick=async function(){
+ if(!selectedFile||!window.ZXing)return;
+ try{
+  const url=URL.createObjectURL(selectedFile),img=new Image();
+  img.onload=async function(){
+   try{
+    const F=ZXing.BarcodeFormat,D=ZXing.DecodeHintType,h=new Map();
+    h.set(D.POSSIBLE_FORMATS,[F.EAN_13,F.EAN_8,F.UPC_A,F.UPC_E,F.CODE_128,F.CODE_39,F.ITF,F.CODABAR]);h.set(D.TRY_HARDER,true);
+    const r=new ZXing.BrowserMultiFormatReader(h);
+    const result=await r.decodeFromImageElement(img);
+    $('imageResult').textContent='IMAGE DECODE SUCCESS: '+result.getText()+' | '+result.getBarcodeFormat();write('STILL IMAGE SUCCESS: '+result.getText()+' | '+result.getBarcodeFormat());
+   }catch(e){$('imageResult').textContent='Image decode failed: '+(e.name||'Error')+' — '+e.message;write('STILL IMAGE FAILURE: '+(e.name||'Error')+' — '+e.message)}
+   URL.revokeObjectURL(url);
+  };img.onerror=function(){write('Could not load selected image')};img.src=url;
+ }catch(e){write('Image test setup error: '+e.message)}
+};
+window.addEventListener('pagehide',stop);
+})();
+</script></body></html>
